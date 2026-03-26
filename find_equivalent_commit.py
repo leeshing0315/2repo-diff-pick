@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+from datetime import date
 import json
 import os
 import shutil
@@ -98,6 +99,59 @@ def find_equivalent_commit(github_repo_dir, intranet_repo_dir):
     return matching_commit, commits_to_pick
 
 
+def remote_branch_exists(repo_dir, remote_name, branch_name):
+    out = run_git(["ls-remote", "--heads", remote_name, branch_name], cwd=repo_dir)
+    return bool(out)
+
+
+def create_sync_branches_and_push(github_repo_dir, intranet_repo_dir, commits_to_pick):
+    if not commits_to_pick:
+        return []
+
+    run_git(["remote", "add", "github-src", str(github_repo_dir)], cwd=intranet_repo_dir)
+    run_git(["fetch", "--quiet", "github-src", "main"], cwd=intranet_repo_dir)
+
+    today_str = date.today().strftime("%Y-%m-%d")
+    branch_names = [f"sync-{today_str}-{idx}" for idx in range(1, len(commits_to_pick) + 1)]
+
+    for branch_name in branch_names:
+        if remote_branch_exists(intranet_repo_dir, "origin", branch_name):
+            raise GitCommandError(
+                f"Remote branch already exists: {branch_name}. "
+                "Please clean it up or rerun on another date."
+            )
+
+    created = []
+    parent_branch = "master"
+    for idx, commit in enumerate(commits_to_pick, start=1):
+        branch_name = f"sync-{today_str}-{idx}"
+        run_git(["checkout", "--quiet", parent_branch], cwd=intranet_repo_dir)
+        run_git(["checkout", "--quiet", "-b", branch_name], cwd=intranet_repo_dir)
+        try:
+            run_git(["cherry-pick", commit["sha"]], cwd=intranet_repo_dir)
+        except GitCommandError as exc:
+            try:
+                run_git(["cherry-pick", "--abort"], cwd=intranet_repo_dir)
+            except GitCommandError:
+                pass
+            raise GitCommandError(
+                f"Cherry-pick failed on branch {branch_name} for commit {commit['sha']}: {exc}"
+            )
+
+        run_git(["push", "--quiet", "-u", "origin", branch_name], cwd=intranet_repo_dir)
+        created.append(
+            {
+                "branch": branch_name,
+                "source_commit": commit["sha"],
+                "subject": commit["subject"],
+            }
+        )
+        parent_branch = branch_name
+
+    run_git(["checkout", "--quiet", "master"], cwd=intranet_repo_dir)
+    return created
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=(
@@ -131,6 +185,13 @@ def main():
         clone_repo(args.intranet_remote, "master", intranet_dir)
 
         matching_commit, commits_to_pick = find_equivalent_commit(github_dir, intranet_dir)
+        created_branches = []
+        if matching_commit:
+            created_branches = create_sync_branches_and_push(
+                github_dir,
+                intranet_dir,
+                commits_to_pick,
+            )
 
         result = {
             "download_dir": str(work_dir),
@@ -139,6 +200,8 @@ def main():
             "matching_github_commit": matching_commit,
             "commits_to_pick_count": len(commits_to_pick),
             "commits_to_pick": commits_to_pick,
+            "created_branches_count": len(created_branches),
+            "created_branches": created_branches,
         }
         print(json.dumps(result, indent=2, ensure_ascii=False))
     except GitCommandError as exc:
