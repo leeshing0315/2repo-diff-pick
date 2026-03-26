@@ -104,18 +104,18 @@ def remote_branch_exists(repo_dir, remote_name, branch_name):
     return bool(out)
 
 
-def create_sync_branches_and_push(github_repo_dir, intranet_repo_dir, commits_to_pick):
+def create_sync_branches_and_push(github_repo_dir, intranet_personal_repo_dir, commits_to_pick):
     if not commits_to_pick:
         return []
 
-    run_git(["remote", "add", "github-src", str(github_repo_dir)], cwd=intranet_repo_dir)
-    run_git(["fetch", "--quiet", "github-src", "main"], cwd=intranet_repo_dir)
+    run_git(["remote", "add", "github-src", str(github_repo_dir)], cwd=intranet_personal_repo_dir)
+    run_git(["fetch", "--quiet", "github-src", "main"], cwd=intranet_personal_repo_dir)
 
     today_str = date.today().strftime("%Y-%m-%d")
     branch_names = [f"sync-{today_str}-{idx}" for idx in range(1, len(commits_to_pick) + 1)]
 
     for branch_name in branch_names:
-        if remote_branch_exists(intranet_repo_dir, "origin", branch_name):
+        if remote_branch_exists(intranet_personal_repo_dir, "origin", branch_name):
             raise GitCommandError(
                 f"Remote branch already exists: {branch_name}. "
                 "Please clean it up or rerun on another date."
@@ -125,20 +125,20 @@ def create_sync_branches_and_push(github_repo_dir, intranet_repo_dir, commits_to
     parent_branch = "master"
     for idx, commit in enumerate(commits_to_pick, start=1):
         branch_name = f"sync-{today_str}-{idx}"
-        run_git(["checkout", "--quiet", parent_branch], cwd=intranet_repo_dir)
-        run_git(["checkout", "--quiet", "-b", branch_name], cwd=intranet_repo_dir)
+        run_git(["checkout", "--quiet", parent_branch], cwd=intranet_personal_repo_dir)
+        run_git(["checkout", "--quiet", "-b", branch_name], cwd=intranet_personal_repo_dir)
         try:
-            run_git(["cherry-pick", commit["sha"]], cwd=intranet_repo_dir)
+            run_git(["cherry-pick", commit["sha"]], cwd=intranet_personal_repo_dir)
         except GitCommandError as exc:
             try:
-                run_git(["cherry-pick", "--abort"], cwd=intranet_repo_dir)
+                run_git(["cherry-pick", "--abort"], cwd=intranet_personal_repo_dir)
             except GitCommandError:
                 pass
             raise GitCommandError(
                 f"Cherry-pick failed on branch {branch_name} for commit {commit['sha']}: {exc}"
             )
 
-        run_git(["push", "--quiet", "-u", "origin", branch_name], cwd=intranet_repo_dir)
+        run_git(["push", "--quiet", "-u", "origin", branch_name], cwd=intranet_personal_repo_dir)
         created.append(
             {
                 "branch": branch_name,
@@ -148,7 +148,7 @@ def create_sync_branches_and_push(github_repo_dir, intranet_repo_dir, commits_to
         )
         parent_branch = branch_name
 
-    run_git(["checkout", "--quiet", "master"], cwd=intranet_repo_dir)
+    run_git(["checkout", "--quiet", "master"], cwd=intranet_personal_repo_dir)
     return created
 
 
@@ -156,11 +156,13 @@ def main():
     parser = argparse.ArgumentParser(
         description=(
             "Find which commit in GitHub main has the same content as "
-            "the latest commit in intranet master, then list commits after it."
+            "the latest commit in intranet public master, then list commits after it "
+            "and sync them into personal intranet branches."
         )
     )
     parser.add_argument("github_remote", help="GitHub repository remote URL")
-    parser.add_argument("intranet_remote", help="Intranet repository remote URL")
+    parser.add_argument("intranet_public_remote", help="Intranet public repository remote URL")
+    parser.add_argument("intranet_personal_remote", help="Intranet personal repository remote URL")
     parser.add_argument(
         "--cleanup",
         action="store_true",
@@ -177,26 +179,29 @@ def main():
     base_dir = get_download_base_dir()
     work_dir = Path(tempfile.mkdtemp(prefix="repo-diff-pick-", dir=str(base_dir)))
     github_dir = work_dir / "github"
-    intranet_dir = work_dir / "intranet"
+    intranet_public_dir = work_dir / "intranet-public"
+    intranet_personal_dir = work_dir / "intranet-personal"
 
     exit_code = 0
     try:
         clone_repo(args.github_remote, "main", github_dir)
-        clone_repo(args.intranet_remote, "master", intranet_dir)
+        clone_repo(args.intranet_public_remote, "master", intranet_public_dir)
+        clone_repo(args.intranet_personal_remote, "master", intranet_personal_dir)
 
-        matching_commit, commits_to_pick = find_equivalent_commit(github_dir, intranet_dir)
+        matching_commit, commits_to_pick = find_equivalent_commit(github_dir, intranet_public_dir)
         created_branches = []
         if matching_commit:
             created_branches = create_sync_branches_and_push(
                 github_dir,
-                intranet_dir,
+                intranet_personal_dir,
                 commits_to_pick,
             )
 
         result = {
             "download_dir": str(work_dir),
             "github_remote": args.github_remote,
-            "intranet_remote": args.intranet_remote,
+            "intranet_public_remote": args.intranet_public_remote,
+            "intranet_personal_remote": args.intranet_personal_remote,
             "matching_github_commit": matching_commit,
             "commits_to_pick_count": len(commits_to_pick),
             "commits_to_pick": commits_to_pick,
